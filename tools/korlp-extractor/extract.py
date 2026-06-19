@@ -167,6 +167,44 @@ def do_login(page):
     return logged_in
 
 
+# "내가 쓴 글" / 마이페이지 후보 경로 (사이트마다 메뉴명이 달라 여러 개 시도).
+MY_POSTS_CANDIDATES = [
+    "?pmode=my", "?pmode=my_info", "?pmode=scrap", "?pmode=searchComment",
+]
+
+
+def collect_post_links(page, url):
+    """주어진 페이지에서 개별 글(smode=view&seq=...) 링크를 모아 반환한다.
+
+    '내가 쓴 글' 같은 목록 페이지를 가리키면, 비활성화된 게시판 목록 주소
+    대신 실제로 열 수 있는 개별 글의 정확한 주소(seq 포함)를 찾을 수 있다.
+    """
+    log(f"링크 수집 페이지 이동: {url}")
+    page.goto(url, wait_until="domcontentloaded")
+    try:
+        page.wait_for_load_state("networkidle", timeout=10000)
+    except PWTimeout:
+        pass
+    page.wait_for_timeout(1500)
+
+    final_url = page.url
+    redirected = "pmode=main" in final_url or final_url.rstrip("/").endswith("korlp.org")
+    links = []
+    seen = set()
+    for a in page.query_selector_all("a[href*='seq=']"):
+        href = a.get_attribute("href") or ""
+        if "smode=view" not in href and "seq=" not in href:
+            continue
+        full = href if href.startswith("http") else f"{BASE}/html/{href.lstrip('/')}" \
+            if not href.startswith("?") else f"{BASE}/html/{href}"
+        if full in seen:
+            continue
+        seen.add(full)
+        text = (a.inner_text() or "").strip().replace("\n", " ")
+        links.append((text, full))
+    return final_url, redirected, links
+
+
 def extract_content(page):
     log(f"대상 페이지 이동: {TARGET_URL}")
     page.goto(TARGET_URL, wait_until="domcontentloaded")
@@ -175,6 +213,13 @@ def extract_content(page):
     except PWTimeout:
         pass
     page.wait_for_timeout(2000)
+
+    final_url = page.url
+    if "pmode=main" in final_url and "pmode=main" not in TARGET_URL:
+        log(f"주의: 대상 주소가 메인 페이지로 리다이렉트되었습니다 ({final_url}).")
+        log("게시판 목록 주소가 비활성화되었거나 접근 권한이 없을 수 있습니다.")
+        log("개별 글은 '?pmode=...&smode=view&seq=번호' 형태의 주소로 열어보세요.")
+        log("'내가 쓴 글' 목록에서 실제 주소를 찾으려면: python extract.py --links")
 
     title = page.title()
     html = page.content()
@@ -197,36 +242,83 @@ def extract_content(page):
     return title, html, body_text
 
 
+def make_page(p, dialog_messages):
+    browser = p.chromium.launch(headless=HEADLESS)
+    context = browser.new_context(
+        user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0 Safari/537.36"),
+        locale="ko-KR",
+    )
+    page = context.new_page()
+
+    # alert/confirm 팝업 가로채기: 텍스트 기록 후 닫기.
+    def on_dialog(dialog):
+        dialog_messages.append(dialog.message)
+        log(f"팝업 감지({dialog.type}): {dialog.message}")
+        try:
+            dialog.accept()
+        except Exception:
+            try:
+                dialog.dismiss()
+            except Exception:
+                pass
+    page.on("dialog", on_dialog)
+    return browser, page
+
+
+def run_links_mode(list_url):
+    """목록 페이지에서 개별 글의 실제 주소(seq 포함)를 찾아 출력한다."""
+    dialog_messages = []
+    with sync_playwright() as p:
+        browser, page = make_page(p, dialog_messages)
+        do_login(page)
+
+        urls_to_try = [list_url] if list_url else MY_POSTS_CANDIDATES
+        all_links = []
+        for u in urls_to_try:
+            full = u if u.startswith("http") else f"{BASE}/html/{u}"
+            final_url, redirected, links = collect_post_links(page, full)
+            tag = " (메인으로 리다이렉트됨)" if redirected else ""
+            log(f"  → {full}{tag}: 글 링크 {len(links)}개")
+            for t, l in links:
+                all_links.append((u, t, l))
+        browser.close()
+
+    print("\n" + "=" * 70)
+    print("발견한 개별 글 링크 (이 주소로 python extract.py \"<주소>\" 실행)")
+    print("=" * 70)
+    if not all_links:
+        print("개별 글 링크를 찾지 못했습니다.")
+        print("브라우저에서 '마이페이지 → 내가 쓴 글'을 직접 연 뒤,")
+        print("'직원 명단' 글을 우클릭 → '링크 주소 복사'로 실제 주소를 얻어")
+        print("python extract.py \"<복사한 주소>\" 로 실행하세요.")
+        if dialog_messages:
+            print("\n[팝업 메시지]")
+            for m in dialog_messages:
+                print(f"  - {m}")
+    else:
+        for src, text, link in all_links:
+            label = text if text else "(제목 없음)"
+            print(f"\n[{src}] {label}\n  {link}")
+    print("\n" + "=" * 70)
+
+
 def main():
     global TARGET_URL
-    if len(sys.argv) > 1:
-        TARGET_URL = sys.argv[1].strip()
+
+    args = sys.argv[1:]
+    if args and args[0] == "--links":
+        run_links_mode(args[1].strip() if len(args) > 1 else "")
+        return
+    if args:
+        TARGET_URL = args[0].strip()
 
     OUTDIR.mkdir(exist_ok=True)
     dialog_messages = []
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=HEADLESS)
-        context = browser.new_context(
-            user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0 Safari/537.36"),
-            locale="ko-KR",
-        )
-        page = context.new_page()
-
-        # alert/confirm 팝업 가로채기: 텍스트 기록 후 닫기.
-        def on_dialog(dialog):
-            dialog_messages.append(dialog.message)
-            log(f"팝업 감지({dialog.type}): {dialog.message}")
-            try:
-                dialog.accept()
-            except Exception:
-                try:
-                    dialog.dismiss()
-                except Exception:
-                    pass
-        page.on("dialog", on_dialog)
+        browser, page = make_page(p, dialog_messages)
 
         do_login(page)
         title, html, body_text = extract_content(page)

@@ -37,6 +37,36 @@ python extract.py
 python extract.py "https://www.korlp.org/html/?pmode=BBBS0028900025"
 ```
 
+## 글이 안 열리고 홈으로 튕길 때 (가장 흔한 경우)
+
+`?pmode=BBBS00289000XX` 처럼 **게시판 목록 주소**로 들어가면, 해당 게시판이
+비활성화/권한제한된 경우 권한 거부 팝업이 뜨고 메인으로 리다이렉트됩니다.
+
+개별 글은 **`seq` 번호가 붙은 주소**로 열어야 합니다:
+
+```
+?pmode=BBBS00289000XX&smode=view&seq=NNNNNN
+```
+
+본인 글의 정확한 주소(seq 포함)를 찾으려면 링크 수집 모드를 쓰세요:
+
+```bash
+# 마이페이지/내가 쓴 글 후보 페이지들을 돌며 개별 글 링크를 출력
+python extract.py --links
+
+# 특정 목록 페이지를 직접 지정
+python extract.py --links "https://www.korlp.org/html/?pmode=my"
+```
+
+출력된 주소 중 원하는 글을 골라 그대로 추출하면 됩니다:
+
+```bash
+python extract.py "https://www.korlp.org/html/?pmode=BBBS0028900025&smode=view&seq=NNNNNN"
+```
+
+자동 수집이 안 되면, 브라우저에서 **마이페이지 → 내가 쓴 글**을 연 뒤
+해당 글을 **우클릭 → 링크 주소 복사**해서 위 명령의 주소로 넣으세요.
+
 ## 출력
 
 - 콘솔: 페이지 제목, 감지된 팝업 메시지, 추출된 본문
